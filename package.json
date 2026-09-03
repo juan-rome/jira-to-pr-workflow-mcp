@@ -1,0 +1,19 @@
+{
+  "name": "jira-to-pr-workflow-mcp",
+  "version": "1.0.0",
+  "description": "MCP-native sibling of jira-to-pr-workflow: same ticket-to-PR pipeline and the same quality gate, but Jira and GitHub access go through the connected Atlassian and GitHub MCP servers instead of a hand-rolled REST client and the gh CLI.",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "capture-screenshot": "node scripts/capture-screenshot.mjs",
+    "test": "node scripts/test-normalizer.mjs && node scripts/test-pr-body.mjs"
+  },
+  "dependencies": {
+    "jira-to-pr-workflow": "github:juan-rome/jira-to-pr-workflow",
+    "playwright": "^1.62.1"
+  },
+  "license": "MIT"
+}
