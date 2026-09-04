@@ -19,7 +19,7 @@ doesn't get weaker just because the transport changed.
 flowchart TD
     A[Step 0: validate Jira + GitHub\nMCP connections] -->|either missing| Z[Stop. Print the exact\nclaude mcp add command]
     A -->|both connected| B[Call Atlassian MCP:\nfetch the ticket]
-    B --> C[normalize-ticket.mjs]
+    B --> C[normalize-ticket-cli.mjs]
     C --> D{assessTicketQuality\nsufficient?}
     D -- no --> E[Stop. Tell the user\nwhat's missing]
     D -- yes --> F[Understand + implement]
@@ -45,15 +45,37 @@ one-off run.
 ## Setup (once)
 
 ```bash
-claude mcp add --transport http atlassian https://mcp.atlassian.com/v2/mcp
-claude mcp add --transport http github https://api.githubcopilot.com/mcp/
+claude mcp add --scope user --transport http atlassian https://mcp.atlassian.com/v2/mcp
 ```
 
-Then, in a Claude Code session, run `/mcp` to complete authentication for
-each (OAuth by default; an API token if your Jira/GitHub org has that
-enabled). This is a one-time, per-machine setup — both connections are
-then available to any skill that wants them, not just this one, which is
-the actual point of using MCP here instead of a per-skill token.
+Then, in a Claude Code session, run `/mcp`, select `atlassian`, and
+authenticate via OAuth (browser popup).
+
+GitHub's MCP endpoint does **not** support OAuth's dynamic client
+registration — confirmed on the first real setup, not assumed — so it
+needs a token in a header instead of `/mcp`:
+
+```bash
+claude mcp add --scope user --transport http github https://api.githubcopilot.com/mcp/ \
+  --header "Authorization: Bearer YOUR_GITHUB_PAT"
+```
+
+Generate a fine-grained PAT at
+[github.com/settings/personal-access-tokens](https://github.com/settings/personal-access-tokens),
+scoped to only the repo(s) this will run against, with **Pull requests:
+Read and write** (Metadata: Read-only is added automatically and is all
+else this needs — no Contents access, since code changes are pushed via
+your regular local git, not through this token).
+
+Avoid the token landing in shell history: run `setopt histignorespace`
+first, then prefix the `claude mcp add` line with a leading space.
+`~/.claude.json` itself stores it in plaintext but is already
+owner-only (`600`) — the same protection model `gh`/AWS CLI use for
+their own token files.
+
+`--scope user` makes both connections available to any skill on this
+machine, not just this one, which is the actual point of using MCP here
+instead of a per-skill token.
 
 `npm install` in this skill's directory once (pulls in
 `jira-to-pr-workflow` as a git dependency, for its quality gate and ADF
@@ -69,8 +91,8 @@ you, and the GitHub MCP server's "who am I" or repo-lookup equivalent).
 **If either call fails or the server isn't connected, stop immediately**
 and tell the user exactly which command to run:
 
-- Jira not connected → `claude mcp add --transport http atlassian https://mcp.atlassian.com/v2/mcp`, then `/mcp`
-- GitHub not connected → `claude mcp add --transport http github https://api.githubcopilot.com/mcp/`, then `/mcp`
+- Jira not connected → `claude mcp add --scope user --transport http atlassian https://mcp.atlassian.com/v2/mcp`, then `/mcp`
+- GitHub not connected → see **Setup (once)** above for the PAT-header command (GitHub's endpoint doesn't support `/mcp`'s OAuth flow)
 
 Don't proceed partway through the pipeline on a guess that a connection
 "probably" exists — a clear stop here is worth far more than a confusing
@@ -81,27 +103,29 @@ failure three steps in.
 Call the connected Atlassian MCP server's Jira read/search tool for the
 ticket key directly — **do not** try to fetch it with a spawned script;
 MCP tool calls only happen inside your own tool-use loop, not from a child
-process. Whatever shape it returns, pass it through:
+process. Then pipe the raw result through the CLI wrapper, using this
+repo's **absolute path** (not a relative one, and don't `cd` into the
+target repo first — the first real run hit exactly this: a script run
+from outside this repo's own directory can't resolve the
+`jira-to-pr-workflow` git dependency, since Node only walks up from the
+running script's own location to find `node_modules`):
 
 ```bash
-node scripts/normalize-ticket.mjs   # invoked programmatically — see the
-                                     # file for the exact normalizeTicket()
-                                     # signature; it's cheaper to import it
-                                     # directly than to shell out for one
-                                     # object transform
+echo '{"mcpIssue": <raw MCP result>, "jiraSiteUrl": "https://your-domain.atlassian.net"}' \
+  | node /absolute/path/to/jira-to-pr-workflow-mcp/scripts/normalize-ticket-cli.mjs
 ```
 
-`normalize-ticket.mjs` reshapes the MCP response into the same
-`{ key, summary, description, acceptanceCriteria, testingPlan, status,
-url }` shape `jira-to-pr-workflow` uses, handling both a raw ADF document
-and an already-flattened plain-text description (the exact response shape
-gets confirmed on the first real run — see **What's unconfirmed** below).
+This prints `{ key, summary, description, acceptanceCriteria, testingPlan,
+status, url, qualityCheck }` — the same shape v1's `fetch-ticket.mjs`
+prints, regardless of whether the MCP server returned a raw ADF document
+or an already-flattened plain-text description (`normalize-ticket.mjs`
+handles both).
 
 ## Step 2 — Quality gate: don't implement an underspecified ticket
 
-Import `assessTicketQuality` from `jira-to-pr-workflow`'s
-`quality-gate.mjs` (a git dependency of this repo — see `package.json`)
-and check `qualityCheck.sufficient` exactly as v1 does. If it's `false`,
+`normalize-ticket-cli.mjs`'s output already includes `qualityCheck`
+(computed by the imported `assessTicketQuality`, unchanged from v1's
+`quality-gate.mjs`). Check `qualityCheck.sufficient`. If it's `false`,
 **stop before writing any code** and name what's missing. This logic is
 intentionally not reimplemented here; both versions of this workflow must
 agree on what counts as a ready ticket.
@@ -147,49 +171,45 @@ screenshot and embed it in the PR body via its raw GitHub URL.
 Confirm with the user before running either of these, same as any other
 action with real-world visibility:
 
-- Attach the screenshot to the ticket via the Atlassian MCP server's
-  attachment tool, if it exposes one.
-- Comment on the ticket with the PR link via the Atlassian MCP server's
-  comment tool, optionally mentioning a reviewer, if it supports a real
-  mention (not just "@Name" as literal text, which notifies no one in
-  Jira).
+- **Attach the screenshot to the ticket.** Confirmed working (see
+  `RUNS.md`): the Atlassian MCP server exposes a two-phase
+  `uploadAttachmentToJiraIssue` tool — call it once to get an upload
+  target/`fileId`, then again to complete the attachment.
+- **Comment on the ticket with the PR link.** Confirmed working via the
+  Atlassian MCP server's comment tool.
 
-**What's unconfirmed until the first real run:** whether the Atlassian
-MCP server's tool surface actually supports file attachment and a proper
-mention node the way `jira-to-pr-workflow`'s hand-rolled ADF client does.
-If it doesn't, say so plainly to the user and skip the unsupported part
-rather than faking it with plain text that looks like it worked but
-doesn't actually notify anyone.
+Mentioning a specific reviewer by name in that comment is still
+unconfirmed — the first real run only posted a plain PR-link comment, not
+one with a real Jira mention node. Don't assume "@Name" as literal text
+notifies anyone; if you need a real mention, verify the tool supports one
+before relying on it working.
 
-## What's unconfirmed until the first real run
-
-This skill was built without a live Jira/GitHub MCP session available —
-completing an interactive `/mcp` OAuth login isn't possible inside a
-non-interactive coding session. Two things specifically need confirming
-against a real connection, and should be corrected here (and in
-`normalize-ticket.mjs`) the first time this actually runs:
+## What's still unconfirmed
 
 1. The exact shape the Atlassian MCP server's Jira read tool returns for
    `description` (raw ADF vs. already-flattened text) — `normalize-ticket.mjs`
-   handles both, but only real output confirms which path actually fires.
-2. Whether the Atlassian MCP server exposes attachment and real-mention
-   tools at all (Step 6).
+   handles both, and the first real run didn't log which path fired.
+2. Whether the Atlassian MCP server's comment tool supports a real
+   @-mention node (only a plain PR-link comment has been tested so far).
 
-See `RUNS.md` for what's actually been verified so far.
+See `RUNS.md` for what's actually been verified.
 
 ## Security considerations
 
-MCP's OAuth flow means no personal API token lives in an environment
-variable on this machine the way `jira-to-pr-workflow` requires — the
-connection is scoped and revocable from your Atlassian/GitHub account
-settings instead. The tradeoff: you're trusting the MCP server's own
-scope model (`read_jira`/`write_jira`/etc.) rather than a token you scoped
-yourself, so review what permissions you grant when connecting.
+Jira access is via OAuth, scoped and revocable from your Atlassian account
+settings, with no personal token to manage. GitHub access still needs a
+PAT (see **Setup**), since GitHub's MCP endpoint doesn't support OAuth's
+dynamic client registration — scope that token to exactly the repo(s)
+this runs against with Pull-requests-only access, same principle as v1's
+"narrowest scope your site allows" for its own Jira token. Never pass a
+token as a bare CLI argument without protecting shell history first (see
+**Setup**) — `~/.claude.json` stores it in plaintext, protected only by
+owner-only file permissions.
 
 ## What this skill does not do
 
 Same as v1: it doesn't decide priority, negotiate scope with a PM, or
 handle a ticket whose acceptance criteria are missing or contradictory —
 surface that back to the user rather than guessing. It doesn't auto-merge.
-It also doesn't yet know whether Step 6 is fully supported by the
-Atlassian MCP server — see **What's unconfirmed** above.
+It also doesn't yet confirm a real Jira @-mention works — see **What's
+still unconfirmed** above.

@@ -9,7 +9,7 @@
   },
   "scripts": {
     "capture-screenshot": "node scripts/capture-screenshot.mjs",
-    "test": "node scripts/test-normalizer.mjs && node scripts/test-pr-body.mjs"
+    "test": "node scripts/test-normalizer.mjs && node scripts/test-pr-body.mjs && node scripts/test-normalize-cli.mjs"
   },
   "dependencies": {
     "jira-to-pr-workflow": "github:juan-rome/jira-to-pr-workflow",
