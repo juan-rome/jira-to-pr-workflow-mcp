@@ -1,0 +1,20 @@
+{
+  "name": "jira-to-pr-workflow-mcp",
+  "description": "MCP-native sibling of jira-to-pr-workflow: fetch a Jira ticket, gate it on quality, implement it, open a PR, and close the loop, all via connected Atlassian and GitHub MCP servers instead of a personal API token and the gh CLI.",
+  "version": "1.1.0",
+  "author": {
+    "name": "Juan Romero"
+  },
+  "homepage": "https://github.com/juan-rome/jira-to-pr-workflow-mcp",
+  "repository": "https://github.com/juan-rome/jira-to-pr-workflow-mcp",
+  "license": "MIT",
+  "keywords": ["jira", "github", "mcp", "pull-request", "workflow"],
+  "userConfig": {
+    "GITHUB_PAT": {
+      "type": "string",
+      "title": "GitHub personal access token",
+      "description": "A fine-grained token, scoped to Pull requests: Read and write on whichever repo(s) this will run against. GitHub's MCP endpoint doesn't support OAuth, so this is required.",
+      "required": true
+    }
+  }
+}
